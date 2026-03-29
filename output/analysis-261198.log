@@ -1,0 +1,8 @@
+2026-03-26 22:42:25
+[AI финальный] target=vehicles
+[AI] Ошибка запроса CometAPI: ('Connection aborted.', TimeoutError('The write operation timed out'))
+
+2026-03-26 22:42:35
+[AI финальный] target=vehicles
+[AI] Ошибка запроса CometAPI: ('Connection aborted.', TimeoutError('The write operation timed out'))
+

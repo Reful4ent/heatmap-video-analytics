@@ -94,6 +94,10 @@ class ProcessingController(QObject):
 
         @param kwargs - Параметры конфигурации для обновления
         """
+        target = self.config.detection.target
+        if "target" in kwargs:
+            target = kwargs["target"]
+
         if "confidence" in kwargs:
             self.config.detection.confidence_threshold = kwargs["confidence"]
         if "blur_radius" in kwargs:
@@ -103,7 +107,12 @@ class ProcessingController(QObject):
         if "frame_skip" in kwargs:
             self.config.video.frame_skip = kwargs["frame_skip"]
         if "detection_method" in kwargs:
-            self.config.detection.detection_method = kwargs["detection_method"]
+            detection_method = kwargs["detection_method"]
+            if target == "vehicles" and detection_method == "foot":
+                detection_method = "full_body"
+            self.config.detection.detection_method = detection_method
+        if "target" in kwargs:
+            self.config.detection.target = kwargs["target"]
 
     def _on_processing_finished(self) -> None:
         """Обработчик завершения обработки."""

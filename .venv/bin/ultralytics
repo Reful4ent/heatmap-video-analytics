@@ -1,0 +1,6 @@
+#!/home/rfflgnt/PycharmProjects/heatmap-video-analytics/.venv/bin/python
+import sys
+from ultralytics.cfg import entrypoint
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(entrypoint())

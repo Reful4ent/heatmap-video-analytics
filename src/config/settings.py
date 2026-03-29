@@ -6,13 +6,14 @@ from typing import Optional
 
 @dataclass
 class DetectionConfig:
-    """Конфигурация для детекции людей."""
+    """Конфигурация для детекции объектов."""
 
     confidence_threshold: float = 0.5
     iou_threshold: float = 0.45
-    model_name: str = "yolov8n.pt"
+    model_name: str = "yolov8l.pt"
     device: Optional[str] = None
     detection_method: str = "full_body"  # "full_body" или "foot"
+    target: str = "person"  # "person" или "vehicles"
 
 
 @dataclass

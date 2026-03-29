@@ -9,7 +9,7 @@ from typing import Optional
 import numpy as np
 
 from src.config.settings import AppConfig
-from src.detection.person_detector import PersonDetector
+from src.detection.yolo_detector import YoloDetector
 from src.heatmap.heatmap_generator import HeatmapGenerator
 from src.video.video_loader import VideoLoader
 
@@ -63,6 +63,13 @@ def parse_arguments() -> argparse.Namespace:
         default=0.5,
         help="Прозрачность наложения тепловой карты (по умолчанию: 0.5)",
     )
+    parser.add_argument(
+        "--target",
+        type=str,
+        choices=["person", "vehicles"],
+        default="person",
+        help="Цель детекции для тепловой карты: person или vehicles (по умолчанию: person)",
+    )
 
     return parser.parse_args()
 
@@ -77,6 +84,7 @@ def main() -> None:
         config.heatmap.blur_radius = args.blur_radius
         config.heatmap.alpha = args.alpha
         config.video.frame_skip = args.frame_skip
+        config.detection.target = args.target
 
         output_path = Path(args.output)
         output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -85,8 +93,9 @@ def main() -> None:
 
         with VideoLoader(args.input, config.video.frame_skip) as loader:
             frame_size = loader.get_frame_size()
-            detector = PersonDetector(config.detection)
+            detector = YoloDetector(config.detection)
             heatmap_gen = HeatmapGenerator(config.heatmap)
+            heatmap_gen.initialize(frame_size)
 
             reference_frame: Optional[np.ndarray] = None
             frame_count = 0
@@ -103,12 +112,12 @@ def main() -> None:
                     logger.info(f"Обработано кадров: {frame_count}")
 
             logger.info(f"Всего обработано кадров: {frame_count}")
-            logger.info(f"Всего детекций: {len(heatmap_gen.detections)}")
+            logger.info(f"Всего детекций: {heatmap_gen.total_detections}")
 
-            if len(heatmap_gen.detections) < config.heatmap.min_detections:
+            if heatmap_gen.total_detections < config.heatmap.min_detections:
                 logger.warning(
                     f"Недостаточно детекций для построения карты: "
-                    f"{len(heatmap_gen.detections)}"
+                    f"{heatmap_gen.total_detections}"
                 )
                 sys.exit(1)
 

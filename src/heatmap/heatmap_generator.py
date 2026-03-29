@@ -21,48 +21,82 @@ class HeatmapGenerator:
         @param config - Конфигурация построения тепловых карт
         """
         self.config = config
-        self.detections: List[Tuple[int, int, int, int]] = []
+        self.accumulator: Optional[np.ndarray] = None
+        self.frame_shape: Optional[Tuple[int, int]] = None
+        self.total_detections: int = 0
+
+    def initialize(self, frame_shape: Tuple[int, int]) -> None:
+        """Инициализирует внутреннюю матрицу накопления для заданного размера кадра.
+
+        @param frame_shape - Размер кадра (ширина, высота)
+        """
+        width, height = frame_shape
+        self.frame_shape = (int(width), int(height))
+        self.accumulator = np.zeros((int(height), int(width)), dtype=np.float32)
+        self.total_detections = 0
 
     def add_detections(self, boxes: List[Tuple[int, int, int, int]]) -> None:
-        """Добавляет bounding boxes детекций для накопления.
+        """Добавляет bounding boxes детекций в матрицу накопления.
 
         @param boxes - Список bounding boxes (x1, y1, x2, y2)
+        @throws {RuntimeError} Если генератор не инициализирован размером кадра
         """
-        self.detections.extend(boxes)
+        if self.accumulator is None or self.frame_shape is None:
+            raise RuntimeError(
+                "HeatmapGenerator не инициализирован. "
+                "Вызовите initialize(frame_shape) перед add_detections()."
+            )
+
+        width, height = self.frame_shape
+        for x1, y1, x2, y2 in boxes:
+            x1_i = max(0, min(int(x1), width))
+            y1_i = max(0, min(int(y1), height))
+            x2_i = max(0, min(int(x2), width))
+            y2_i = max(0, min(int(y2), height))
+
+            if x2_i > x1_i and y2_i > y1_i:
+                self.accumulator[y1_i:y2_i, x1_i:x2_i] += 1.0
+                self.total_detections += 1
 
     def clear(self) -> None:
-        """Очищает накопленные детекции."""
-        self.detections.clear()
+        """Очищает накопленные данные тепловой карты."""
+        if self.accumulator is not None:
+            self.accumulator.fill(0.0)
+        self.total_detections = 0
 
     def generate(
         self, frame_shape: Tuple[int, int], reference_frame: Optional[np.ndarray] = None
     ) -> np.ndarray:
-        """Генерирует тепловую карту из накопленных детекций.
+        """Генерирует тепловую карту из накопленной матрицы.
 
         @param frame_shape - Размер кадра (ширина, высота)
         @param reference_frame - Опциональный кадр для наложения (BGR формат)
         @returns {np.ndarray} Тепловая карта в формате BGR
         @throws {ValueError} Если недостаточно детекций для построения карты
+        @throws {RuntimeError} Если генератор не инициализирован
         """
-        if len(self.detections) < self.config.min_detections:
-            raise ValueError(
-                f"Недостаточно детекций для построения карты: "
-                f"{len(self.detections)} < {self.config.min_detections}"
+        if self.accumulator is None or self.frame_shape is None:
+            raise RuntimeError(
+                "HeatmapGenerator не инициализирован. "
+                "Вызовите initialize(frame_shape) перед generate()."
             )
 
-        width, height = frame_shape
-        heatmap = np.zeros((height, width), dtype=np.float32)
+        if self.total_detections < self.config.min_detections:
+            raise ValueError(
+                f"Недостаточно детекций для построения карты: "
+                f"{self.total_detections} < {self.config.min_detections}"
+            )
 
-        for x1, y1, x2, y2 in self.detections:
-            x1 = max(0, min(int(x1), width))
-            y1 = max(0, min(int(y1), height))
-            x2 = max(0, min(int(x2), width))
-            y2 = max(0, min(int(y2), height))
+        if tuple(map(int, frame_shape)) != tuple(map(int, self.frame_shape)):
+            logger.warning(
+                f"frame_shape отличается от инициализированного значения: "
+                f"{frame_shape} != {self.frame_shape}. Используется self.frame_shape."
+            )
 
-            if x2 > x1 and y2 > y1:
-                heatmap[y1:y2, x1:x2] += 1.0
-
-        heatmap = cv2.GaussianBlur(heatmap, (self.config.blur_radius, self.config.blur_radius), 0)
+        heatmap = self.accumulator.copy()
+        heatmap = cv2.GaussianBlur(
+            heatmap, (self.config.blur_radius, self.config.blur_radius), 0
+        )
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
         colormap = plt.get_cmap(self.config.colormap)

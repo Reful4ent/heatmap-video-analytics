@@ -16,9 +16,11 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
+    QSplitter,
     QSlider,
     QSpinBox,
     QStatusBar,
+    QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
@@ -53,12 +55,39 @@ class MainWindow(QMainWindow):
         control_panel = self._create_control_panel()
         main_layout.addWidget(control_panel)
 
-        video_layout = QHBoxLayout()
+        self.splitter = QSplitter(Qt.Orientation.Vertical)
+        main_layout.addWidget(self.splitter)
+
+        video_container = QWidget()
+        video_layout = QHBoxLayout(video_container)
+        video_layout.setContentsMargins(0, 0, 0, 0)
         self.video_widget = VideoWidget()
         self.heatmap_widget = VideoWidget()
         video_layout.addWidget(self.video_widget)
         video_layout.addWidget(self.heatmap_widget)
-        main_layout.addLayout(video_layout)
+        self.splitter.addWidget(video_container)
+
+        analysis_container = QWidget()
+        analysis_layout = QVBoxLayout(analysis_container)
+        analysis_layout.setContentsMargins(0, 0, 0, 0)
+
+        self.toggle_ai_button = QPushButton("Скрыть AI анализ")
+        self.toggle_ai_button.setCheckable(True)
+        self.toggle_ai_button.setChecked(True)
+        self.toggle_ai_button.toggled.connect(self._on_toggle_ai_panel)
+        analysis_layout.addWidget(self.toggle_ai_button)
+
+        self.analysis_label = QLabel("AI анализ (GPT-4o):")
+        analysis_layout.addWidget(self.analysis_label)
+
+        self._analysis_md_buffer = ""
+        self.analysis_text = QTextBrowser()
+        self.analysis_text.setOpenExternalLinks(False)
+        analysis_layout.addWidget(self.analysis_text)
+
+        self.splitter.addWidget(analysis_container)
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 2)
 
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
@@ -140,7 +169,20 @@ class MainWindow(QMainWindow):
 
         layout.addWidget(QLabel("Настройки:"))
 
-        detection_method_layout = QVBoxLayout()
+        detection_target_layout = QVBoxLayout()
+        detection_target_layout.addWidget(QLabel("Объект детекции:"))
+        self.detection_target_group = QButtonGroup()
+        self.person_radio = QRadioButton("Люди (Person)")
+        self.person_radio.setChecked(True)
+        self.vehicles_radio = QRadioButton("Транспорт (Vehicles)")
+        self.detection_target_group.addButton(self.person_radio, 0)
+        self.detection_target_group.addButton(self.vehicles_radio, 1)
+        detection_target_layout.addWidget(self.person_radio)
+        detection_target_layout.addWidget(self.vehicles_radio)
+        layout.addLayout(detection_target_layout)
+
+        self.detection_method_container = QWidget()
+        detection_method_layout = QVBoxLayout(self.detection_method_container)
         detection_method_layout.addWidget(QLabel("Метод детекции:"))
         self.detection_method_group = QButtonGroup()
         self.full_body_radio = QRadioButton("Полный силуэт (Full Body)")
@@ -150,7 +192,7 @@ class MainWindow(QMainWindow):
         self.detection_method_group.addButton(self.foot_radio, 1)
         detection_method_layout.addWidget(self.full_body_radio)
         detection_method_layout.addWidget(self.foot_radio)
-        layout.addLayout(detection_method_layout)
+        layout.addWidget(self.detection_method_container)
 
         confidence_layout = QHBoxLayout()
         confidence_layout.addWidget(QLabel("Confidence:"))
@@ -204,9 +246,20 @@ class MainWindow(QMainWindow):
         self.confidence_slider.valueChanged.connect(self._on_confidence_changed)
         self.alpha_slider.valueChanged.connect(self._on_alpha_changed)
 
+        self.person_radio.toggled.connect(self._on_detection_target_changed)
+        self.vehicles_radio.toggled.connect(self._on_detection_target_changed)
+        self._on_detection_target_changed()
+
         self.controller.processing_started.connect(self._on_processing_started)
         self.controller.processing_stopped.connect(self._on_processing_stopped)
         self.controller.processing_finished.connect(self._on_processing_finished)
+
+    def _on_detection_target_changed(self) -> None:
+        """Обновляет видимость метода детекции для выбранной цели."""
+        is_person = self.person_radio.isChecked()
+        self.detection_method_container.setVisible(is_person)
+        if not is_person:
+            self.full_body_radio.setChecked(True)
 
     def _get_video_source(self) -> str:
         """Получает выбранный источник видео.
@@ -233,6 +286,7 @@ class MainWindow(QMainWindow):
             if self.controller.worker:
                 self.controller.worker.frame_ready.connect(self._on_frame_ready)
                 self.controller.worker.heatmap_ready.connect(self._on_heatmap_ready)
+                self.controller.worker.analysis_ready.connect(self._on_analysis_ready)
                 self.controller.worker.progress_updated.connect(self._on_progress_updated)
                 self.controller.worker.status_message.connect(self._on_status_message)
                 self.controller.worker.finished_signal.connect(self._on_processing_finished)
@@ -310,6 +364,7 @@ class MainWindow(QMainWindow):
         alpha = self.alpha_slider.value() / 100.0
         frame_skip = self.frame_skip_spinbox.value()
         detection_method = "foot" if self.foot_radio.isChecked() else "full_body"
+        target = "vehicles" if self.vehicles_radio.isChecked() else "person"
 
         self.controller.update_config(
             confidence=confidence,
@@ -317,6 +372,7 @@ class MainWindow(QMainWindow):
             alpha=alpha,
             frame_skip=frame_skip,
             detection_method=detection_method,
+            target=target,
         )
 
     @pyqtSlot(np.ndarray)
@@ -336,6 +392,26 @@ class MainWindow(QMainWindow):
         self.current_heatmap = heatmap
         self.heatmap_widget.display_frame(heatmap)
         self.save_button.setEnabled(True)
+
+    @pyqtSlot(str)
+    def _on_analysis_ready(self, text: str) -> None:
+        """Обработчик результата AI анализа.
+
+        @param text - Текстовый отчёт анализа
+        """
+        if self._analysis_md_buffer:
+            self._analysis_md_buffer += "\n\n---\n\n"
+        self._analysis_md_buffer += text
+        self.analysis_text.setMarkdown(self._analysis_md_buffer)
+
+    def _on_toggle_ai_panel(self, visible: bool) -> None:
+        """Скрывает/показывает панель AI анализа.
+
+        @param visible - True если панель должна быть показана
+        """
+        self.analysis_label.setVisible(visible)
+        self.analysis_text.setVisible(visible)
+        self.toggle_ai_button.setText("Скрыть AI анализ" if visible else "Показать AI анализ")
 
     @pyqtSlot(int, int)
     def _on_progress_updated(self, frames: int, detections: int) -> None:

@@ -1,0 +1,6 @@
+#!/home/rfflgnt/PycharmProjects/heatmap-video-analytics/.venv/bin/python
+import sys
+from tools.flight_recorder.fr_trace import main
+if __name__ == '__main__':
+    sys.argv[0] = sys.argv[0].removesuffix('.exe')
+    sys.exit(main())

@@ -1,6 +1,9 @@
 """Worker thread для обработки видео в фоновом режиме."""
 
 import logging
+import threading
+import time
+from pathlib import Path
 from typing import Optional
 
 import cv2
@@ -8,7 +11,8 @@ import numpy as np
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from src.config.settings import AppConfig
-from src.detection.person_detector import PersonDetector
+from src.ai.qwen_vision_analyzer import QwenVisionAnalyzer, QwenVisionAnalyzerConfig
+from src.detection.yolo_detector import YoloDetector
 from src.heatmap.heatmap_generator import HeatmapGenerator
 from src.video.video_loader import VideoLoader
 
@@ -20,6 +24,7 @@ class ProcessingWorker(QThread):
 
     frame_ready = pyqtSignal(np.ndarray)
     heatmap_ready = pyqtSignal(np.ndarray)
+    analysis_ready = pyqtSignal(str)
     progress_updated = pyqtSignal(int, int)
     status_message = pyqtSignal(str)
     finished_signal = pyqtSignal()
@@ -37,6 +42,9 @@ class ProcessingWorker(QThread):
         self.config = config
         self._is_running = False
         self._should_stop = False
+        self._analyzer: Optional[QwenVisionAnalyzer] = None
+        self._analysis_thread: Optional[threading.Thread] = None
+        self._analysis_log_path = self._build_analysis_log_path(source)
 
     def stop(self) -> None:
         """Останавливает обработку."""
@@ -49,7 +57,7 @@ class ProcessingWorker(QThread):
             self._should_stop = False
 
             self.status_message.emit("Инициализация детектора...")
-            detector = PersonDetector(self.config.detection)
+            detector = YoloDetector(self.config.detection)
             heatmap_gen = HeatmapGenerator(self.config.heatmap)
 
             self.status_message.emit(f"Открытие источника видео: {self.source}")
@@ -58,6 +66,7 @@ class ProcessingWorker(QThread):
 
             try:
                 frame_size = loader.get_frame_size()
+                heatmap_gen.initialize(frame_size)
                 reference_frame: Optional[np.ndarray] = None
                 frame_count = 0
                 total_detections = 0
@@ -81,12 +90,11 @@ class ProcessingWorker(QThread):
                     frame_with_boxes = self._draw_detections(frame.copy(), boxes)
                     self.frame_ready.emit(frame_with_boxes)
 
-                    if frame_count % 5 == 0 or len(heatmap_gen.detections) > 0:
-                        try:
-                            heatmap = heatmap_gen.generate(frame_size, frame)
-                            self.heatmap_ready.emit(heatmap)
-                        except ValueError:
-                            pass
+                    try:
+                        heatmap = heatmap_gen.generate(frame_size, frame)
+                        self.heatmap_ready.emit(heatmap)
+                    except ValueError:
+                        pass
 
                     self.progress_updated.emit(frame_count, total_detections)
                     self.status_message.emit(
@@ -101,6 +109,12 @@ class ProcessingWorker(QThread):
                 self.status_message.emit(
                     f"Обработка завершена. Кадров: {frame_count}, Детекций: {total_detections}"
                 )
+                if reference_frame is not None:
+                    try:
+                        last_heatmap = heatmap_gen.generate(frame_size, reference_frame)
+                        self._maybe_send_analysis(frame=reference_frame, heatmap=last_heatmap, is_last_frame=True)
+                    except ValueError:
+                        pass
 
             finally:
                 loader.close()
@@ -125,4 +139,66 @@ class ProcessingWorker(QThread):
             cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
 
         return frame
+
+    def _maybe_send_analysis(self, frame: np.ndarray, heatmap: np.ndarray, is_last_frame: bool) -> None:
+        """Отправляет анализ в Qwen на последнем кадре.
+
+        @param frame - Исходный кадр (BGR)
+        @param heatmap - Тепловая карта/overlay (BGR)
+        @param is_last_frame - Признак финального отчёта
+        """
+        if not is_last_frame:
+            return
+
+        if self._analyzer is None:
+            self._analyzer = QwenVisionAnalyzer(QwenVisionAnalyzerConfig())
+
+        if self._analysis_thread is not None and self._analysis_thread.is_alive():
+            return
+
+        target = self.config.detection.target
+        frame_copy = frame.copy()
+        heatmap_copy = heatmap.copy()
+
+        self.status_message.emit("AI анализ (финальный): отправка запроса (async)...")
+        started_at = time.monotonic()
+
+        def run_request() -> None:
+            report = self._analyzer.analyze(
+                target=target,
+                frame_bgr=frame_copy,
+                heatmap_bgr=heatmap_copy,
+            )
+            elapsed_sec = time.monotonic() - started_at
+            self.status_message.emit(f"AI анализ (финальный): готово за {elapsed_sec:.1f}с")
+
+            message = f"[AI финальный] target={target}\n{report}\n"
+            self.analysis_ready.emit(message)
+            self._append_analysis_log(message)
+
+        self._analysis_thread = threading.Thread(target=run_request, daemon=True)
+        self._analysis_thread.start()
+
+    def _build_analysis_log_path(self, source: str) -> Path:
+        """Строит путь до файла логов анализа.
+
+        @param source - Источник видео
+        @returns {Path} Путь до файла логов
+        """
+        out_dir = Path("output")
+        safe_name = "webcam" if source.lower().startswith("webcam") else Path(source).stem
+        return out_dir / f"analysis-{safe_name}.log"
+
+    def _append_analysis_log(self, message: str) -> None:
+        """Добавляет сообщение анализа в файл.
+
+        @param message - Сообщение для записи
+        """
+        try:
+            self._analysis_log_path.parent.mkdir(parents=True, exist_ok=True)
+            ts = time.strftime("%Y-%m-%d %H:%M:%S")
+            with self._analysis_log_path.open("a", encoding="utf-8") as f:
+                f.write(f"{ts}\n{message}\n")
+        except Exception as e:
+            logger.error(f"Не удалось записать analysis log: {e}", exc_info=True)
 
