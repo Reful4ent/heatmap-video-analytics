@@ -19,6 +19,7 @@ class ProcessingController(QObject):
     processing_started = pyqtSignal()
     processing_stopped = pyqtSignal()
     processing_finished = pyqtSignal()
+    run_finalized = pyqtSignal(str)
 
     def __init__(self, parent=None) -> None:
         """Инициализирует контроллер обработки.
@@ -43,6 +44,7 @@ class ProcessingController(QObject):
         self.worker = ProcessingWorker(source, self.config)
         self.worker.finished_signal.connect(self._on_processing_finished)
         self.worker.error_occurred.connect(self._on_error)
+        self.worker.run_finalized.connect(self.run_finalized.emit)
         self.worker.start()
         self.processing_started.emit()
 

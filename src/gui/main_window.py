@@ -20,11 +20,13 @@ from PyQt6.QtWidgets import (
     QSlider,
     QSpinBox,
     QStatusBar,
+    QTabWidget,
     QTextBrowser,
     QVBoxLayout,
     QWidget,
 )
 
+from src.gui.history_widget import HistoryWidget
 from src.gui.processing_controller import ProcessingController
 from src.gui.video_widget import VideoWidget
 
@@ -44,13 +46,19 @@ class MainWindow(QMainWindow):
 
     def _setup_ui(self) -> None:
         """Настраивает интерфейс пользователя."""
-        self.setWindowTitle("Тепловые карты для ретейлинга")
+        self.setWindowTitle("Тепловые карты")
         self.setMinimumSize(1200, 700)
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
 
-        main_layout = QVBoxLayout(central_widget)
+        root_layout = QVBoxLayout(central_widget)
+
+        self.tabs = QTabWidget()
+        root_layout.addWidget(self.tabs)
+
+        processing_tab = QWidget()
+        main_layout = QVBoxLayout(processing_tab)
 
         control_panel = self._create_control_panel()
         main_layout.addWidget(control_panel)
@@ -92,6 +100,11 @@ class MainWindow(QMainWindow):
         self.progress_bar = QProgressBar()
         self.progress_bar.setVisible(False)
         main_layout.addWidget(self.progress_bar)
+
+        self.tabs.addTab(processing_tab, "Обработка")
+
+        self.history_widget = HistoryWidget()
+        self.tabs.addTab(self.history_widget, "История запусков")
 
         self.status_bar = QStatusBar()
         self.setStatusBar(self.status_bar)
@@ -253,6 +266,7 @@ class MainWindow(QMainWindow):
         self.controller.processing_started.connect(self._on_processing_started)
         self.controller.processing_stopped.connect(self._on_processing_stopped)
         self.controller.processing_finished.connect(self._on_processing_finished)
+        self.controller.run_finalized.connect(self._on_run_finalized)
 
     def _on_detection_target_changed(self) -> None:
         """Обновляет видимость метода детекции для выбранной цели."""
@@ -449,6 +463,16 @@ class MainWindow(QMainWindow):
         self.stop_button.setEnabled(False)
         self.progress_bar.setVisible(False)
         self.status_bar.showMessage("Обработка завершена")
+
+    @pyqtSlot(str)
+    def _on_run_finalized(self, run_id: str) -> None:
+        """Обновляет вкладку истории при завершении прогона.
+
+        @param run_id - Идентификатор прогона
+        @returns None
+        """
+        self.history_widget.refresh()
+        self.status_bar.showMessage(f"Прогон сохранён: {run_id}")
 
     @pyqtSlot(str)
     def _on_error(self, error_message: str) -> None:

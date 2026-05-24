@@ -19,6 +19,7 @@ wheels/
 *.egg-info/
 .installed.cfg
 *.egg
+.venv/
 
 # Virtual Environment
 venv/
@@ -46,7 +47,11 @@ models/
 Thumbs.db
 
 
-
-
-
+docs/
+.venv/
+.agents/
+scripts/
+.env
+env
+output/
 

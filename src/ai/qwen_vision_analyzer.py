@@ -20,7 +20,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass(frozen=True)
 class QwenVisionAnalyzerConfig:
-    """Конфигурация анализатора Qwen2.5-VL."""
+    """Хранит параметры подключения и работы анализатора CometAPI."""
 
     # CometAPI guide suggests using qwen-max
     model_id: str = "gpt-4o"
@@ -29,12 +29,13 @@ class QwenVisionAnalyzerConfig:
 
 
 class QwenVisionAnalyzer:
-    """Анализирует кадр и тепловую карту и возвращает текстовый отчёт."""
+    """Выполняет мультимодальный анализ кадра и тепловой карты через CometAPI для генерации текстового отчета."""
 
     def __init__(self, config: QwenVisionAnalyzerConfig) -> None:
-        """Инициализирует анализатор.
+        """Инициализирует анализатор с заданной конфигурацией.
 
-        @param config - Конфигурация анализатора
+        @param config - Конфигурация анализатора QwenVisionAnalyzerConfig
+        @returns None
         """
         self.config = config
         self._model = None
@@ -46,12 +47,13 @@ class QwenVisionAnalyzer:
         frame_bgr: np.ndarray,
         heatmap_bgr: np.ndarray,
     ) -> str:
-        """Готовит промпт, отправляет 2 изображения в Qwen и возвращает отчёт.
+        """Выполняет полный цикл анализа включая подготовку изображений формирование промпта отправку запроса к API и обработку ответа.
 
-        @param target - Цель детекции (person/vehicles)
-        @param frame_bgr - Оригинальный кадр (BGR)
-        @param heatmap_bgr - Тепловая карта/overlay (BGR)
-        @returns {str} Текстовый отчёт
+        @param target - Цель детекции person или vehicles для адаптации промпта
+        @param frame_bgr - Оригинальный кадр в BGR формате
+        @param heatmap_bgr - Сгенерированная тепловая карта или overlay в BGR формате
+        @returns {str} Текстовый отчет от модели или сообщение об ошибке
+        @throws {RuntimeError} При ошибках API запроса или формата ответа
         """
         prompt = self._build_prompt(target=target)
         api_key = os.getenv("COMET_API_KEY")
@@ -78,16 +80,14 @@ class QwenVisionAnalyzer:
             return f"[AI] Ошибка запроса CometAPI: {e}"
 
     def _run_cometapi(self, prompt: str, frame: Image.Image, heatmap: Image.Image, api_key: str) -> str:
-        """Вызывает CometAPI чат completion (по гайду CometAPI).
+        """Выполняет HTTP запрос к CometAPI с двумя изображениями и промптом для получения текстового анализа.
 
-        CometAPI в гайде использует `model=qwen-max` и endpoint вида `/v1/chat/completions`.
-        Для изображений используем OpenAI-compatible формат `image_url` с data URI.
-
-        @param prompt - Итоговый промпт (с delta-first)
-        @param frame - PIL RGB изображение кадра
+        @param prompt - Сформированный промпт с инструкциями анализа
+        @param frame - PIL RGB изображение исходного кадра
         @param heatmap - PIL RGB изображение тепловой карты
-        @param api_key - API ключ CometAPI
-        @returns {str} Текст ответа модели
+        @param api_key - Валидированный API ключ CometAPI
+        @returns {str} Текст ответа от модели
+        @throws {RuntimeError} При HTTP ошибках неверном формате ответа или проблемах с ключом
         """
         url = f"{self.config.api_base_url.rstrip('/')}/v1/chat/completions"
         api_key_clean = api_key.strip()
@@ -151,10 +151,10 @@ class QwenVisionAnalyzer:
         return f"data:image/png;base64,{encoded}"
 
     def _build_prompt(self, target: str) -> str:
-        """Формирует промпт для Qwen.
+        """Формирует контекстный промпт для модели в зависимости от цели анализа.
 
-        @param target - Цель детекции (person/vehicles)
-        @returns {str} Промпт
+        @param target - Цель детекции person или vehicles
+        @returns {str} Полный промпт содержащий инструкции по интерпретации цветов и структуре ответа
         """
         header = (
             "Сделай полный анализ по текущим изображениям.\n"

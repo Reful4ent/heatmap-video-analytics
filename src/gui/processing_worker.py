@@ -3,6 +3,7 @@
 import logging
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
@@ -14,6 +15,7 @@ from src.config.settings import AppConfig
 from src.ai.qwen_vision_analyzer import QwenVisionAnalyzer, QwenVisionAnalyzerConfig
 from src.detection.yolo_detector import YoloDetector
 from src.heatmap.heatmap_generator import HeatmapGenerator
+from src.storage import AnalysisRecord, RunMetadata, RunStorage
 from src.video.video_loader import VideoLoader
 
 logger = logging.getLogger(__name__)
@@ -29,6 +31,7 @@ class ProcessingWorker(QThread):
     status_message = pyqtSignal(str)
     finished_signal = pyqtSignal()
     error_occurred = pyqtSignal(str)
+    run_finalized = pyqtSignal(str)
 
     def __init__(self, source: str, config: AppConfig, parent=None) -> None:
         """Инициализирует worker thread.
@@ -45,6 +48,9 @@ class ProcessingWorker(QThread):
         self._analyzer: Optional[QwenVisionAnalyzer] = None
         self._analysis_thread: Optional[threading.Thread] = None
         self._analysis_log_path = self._build_analysis_log_path(source)
+        self._storage = RunStorage()
+        self._run_id: str = self._storage.generate_run_id(source)
+        self._run_finalized: bool = False
 
     def stop(self) -> None:
         """Останавливает обработку."""
@@ -67,7 +73,7 @@ class ProcessingWorker(QThread):
             try:
                 frame_size = loader.get_frame_size()
                 heatmap_gen.initialize(frame_size)
-                reference_frame: Optional[np.ndarray] = None
+                last_frame: Optional[np.ndarray] = None
                 frame_count = 0
                 total_detections = 0
                 is_webcam = self.source.lower() == "webcam" or self.source.lower().startswith("webcam:")
@@ -79,8 +85,7 @@ class ProcessingWorker(QThread):
                         self.status_message.emit("Остановка обработки...")
                         break
 
-                    if reference_frame is None:
-                        reference_frame = frame.copy()
+                    last_frame = frame.copy()
 
                     boxes = detector.detect(frame)
                     heatmap_gen.add_detections(boxes)
@@ -109,12 +114,23 @@ class ProcessingWorker(QThread):
                 self.status_message.emit(
                     f"Обработка завершена. Кадров: {frame_count}, Детекций: {total_detections}"
                 )
-                if reference_frame is not None:
+                if last_frame is not None:
+                    last_heatmap: Optional[np.ndarray] = None
                     try:
-                        last_heatmap = heatmap_gen.generate(frame_size, reference_frame)
-                        self._maybe_send_analysis(frame=reference_frame, heatmap=last_heatmap, is_last_frame=True)
+                        last_heatmap = heatmap_gen.generate(frame_size, last_frame)
                     except ValueError:
-                        pass
+                        last_heatmap = None
+                    self._finalize_run(
+                        frame=last_frame,
+                        heatmap=last_heatmap,
+                        frame_size=frame_size,
+                        frame_count=frame_count,
+                        total_detections=total_detections,
+                    )
+                    if last_heatmap is not None:
+                        self._maybe_send_analysis(
+                            frame=last_frame, heatmap=last_heatmap, is_last_frame=True
+                        )
 
             finally:
                 loader.close()
@@ -175,9 +191,80 @@ class ProcessingWorker(QThread):
             message = f"[AI финальный] target={target}\n{report}\n"
             self.analysis_ready.emit(message)
             self._append_analysis_log(message)
+            self._save_analysis_record(target=target, report=report, duration_sec=elapsed_sec)
 
         self._analysis_thread = threading.Thread(target=run_request, daemon=True)
         self._analysis_thread.start()
+
+    def _finalize_run(
+        self,
+        frame: np.ndarray,
+        heatmap: Optional[np.ndarray],
+        frame_size: tuple,
+        frame_count: int,
+        total_detections: int,
+    ) -> None:
+        """Сохраняет последний кадр и метаданные прогона; тепловую карту сохраняет только при наличии.
+
+        @param frame - Опорный кадр в BGR формате (обязателен)
+        @param heatmap - Финальная тепловая карта в BGR формате или None если детекций не было
+        @param frame_size - Размер кадра ширина высота
+        @param frame_count - Количество обработанных кадров
+        @param total_detections - Общее количество детекций
+        @returns None
+        """
+        try:
+            self._storage.save_frame(self._run_id, frame)
+            if heatmap is not None:
+                self._storage.save_heatmap(self._run_id, heatmap)
+            metadata = RunMetadata(
+                run_id=self._run_id,
+                source=self.source,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                target=self.config.detection.target,
+                detection_method=self.config.detection.detection_method,
+                confidence_threshold=self.config.detection.confidence_threshold,
+                iou_threshold=self.config.detection.iou_threshold,
+                blur_radius=self.config.heatmap.blur_radius,
+                alpha=self.config.heatmap.alpha,
+                frame_skip=self.config.video.frame_skip,
+                frame_width=int(frame_size[0]),
+                frame_height=int(frame_size[1]),
+                total_frames=int(frame_count),
+                total_detections=int(total_detections),
+                model_name=self.config.detection.model_name,
+            )
+            self._storage.save_metadata(metadata)
+            self._run_finalized = True
+            self.run_finalized.emit(self._run_id)
+            logger.info(
+                f"Прогон сохранён: {self._run_id} (heatmap={'да' if heatmap is not None else 'нет'})"
+            )
+        except Exception as e:
+            logger.error(f"Не удалось сохранить прогон {self._run_id}: {e}", exc_info=True)
+
+    def _save_analysis_record(self, target: str, report: str, duration_sec: float) -> None:
+        """Сохраняет результат AI-аналитики в JSON-файл прогона.
+
+        @param target - Цель детекции
+        @param report - Текстовый отчёт от модели
+        @param duration_sec - Длительность запроса в секундах
+        @returns None
+        """
+        try:
+            record = AnalysisRecord(
+                run_id=self._run_id,
+                target=target,
+                model_id=self._analyzer.config.model_id if self._analyzer else "",
+                analysis_text=report,
+                created_at=datetime.now(timezone.utc).isoformat(),
+                duration_sec=float(duration_sec),
+            )
+            self._storage.save_analysis(record)
+            self.run_finalized.emit(self._run_id)
+            logger.info(f"AI-аналитика сохранена для {self._run_id}")
+        except Exception as e:
+            logger.error(f"Не удалось сохранить аналитику {self._run_id}: {e}", exc_info=True)
 
     def _build_analysis_log_path(self, source: str) -> Path:
         """Строит путь до файла логов анализа.
