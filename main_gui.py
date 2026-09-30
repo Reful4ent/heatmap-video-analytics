@@ -1,7 +1,13 @@
 """Точка входа для GUI версии приложения."""
+import torch  # noqa: F401  (должен импортироваться раньше PyQt6 на Windows)
 
 import logging
 import sys
+from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).parent / ".env", override=True)
 
 from PyQt6.QtWidgets import QApplication
 

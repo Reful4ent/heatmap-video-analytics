@@ -11,6 +11,15 @@ from src.config.settings import HeatmapConfig
 
 logger = logging.getLogger(__name__)
 
+_CV2_COLORMAPS = {
+    "jet": cv2.COLORMAP_JET,
+    "hot": cv2.COLORMAP_HOT,
+    "turbo": cv2.COLORMAP_TURBO,
+    "viridis": cv2.COLORMAP_VIRIDIS,
+    "inferno": cv2.COLORMAP_INFERNO,
+    "plasma": cv2.COLORMAP_PLASMA,
+}
+
 
 class HeatmapGenerator:
     """Класс для построения тепловых карт из координат детекций."""
@@ -99,10 +108,10 @@ class HeatmapGenerator:
         )
         heatmap = (heatmap - heatmap.min()) / (heatmap.max() - heatmap.min() + 1e-8)
 
-        colormap = plt.get_cmap(self.config.colormap)
-        heatmap_colored = colormap(heatmap)[:, :, :3]
-        heatmap_colored = (heatmap_colored * 255).astype(np.uint8)
-        heatmap_bgr = cv2.cvtColor(heatmap_colored, cv2.COLOR_RGB2BGR)
+        heatmap_u8 = (heatmap * 255).astype(np.uint8)
+        heatmap_bgr = cv2.applyColorMap(
+            heatmap_u8, _CV2_COLORMAPS.get(self.config.colormap, cv2.COLORMAP_JET)
+        )
 
         if reference_frame is not None:
             overlay = cv2.addWeighted(

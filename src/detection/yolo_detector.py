@@ -1,5 +1,6 @@
 """Модуль универсального детектора объектов на видео с использованием YOLO."""
 
+import torch
 import logging
 from typing import Dict, List, Tuple
 
@@ -45,6 +46,8 @@ class YoloDetector:
             conf=self.config.confidence_threshold,
             iou=self.config.iou_threshold,
             classes=self._classes,
+            device=0 if torch.cuda.is_available() else "cpu",
+            half=torch.cuda.is_available(),
             verbose=False,
         )
 
@@ -61,6 +64,10 @@ class YoloDetector:
 
         if boxes_list:
             logger.debug(f"Обнаружено объектов: {len(boxes_list)} (target={self.config.target})")
+
+        if not hasattr(self, "_device_logged"):
+            self._device_logged = True
+            logger.info(f"YOLO работает на: {next(self.model.model.parameters()).device}")
 
         return boxes_list
 

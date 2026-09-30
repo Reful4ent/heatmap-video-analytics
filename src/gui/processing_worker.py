@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 class ProcessingWorker(QThread):
     """Worker thread для обработки видео."""
 
+    HEATMAP_PREVIEW_EVERY = 1
+    STATUS_EVERY = 5
+
     frame_ready = pyqtSignal(np.ndarray)
     heatmap_ready = pyqtSignal(np.ndarray)
     analysis_ready = pyqtSignal(str)
@@ -95,16 +98,18 @@ class ProcessingWorker(QThread):
                     frame_with_boxes = self._draw_detections(frame.copy(), boxes)
                     self.frame_ready.emit(frame_with_boxes)
 
-                    try:
-                        heatmap = heatmap_gen.generate(frame_size, frame)
-                        self.heatmap_ready.emit(heatmap)
-                    except ValueError:
-                        pass
+                    if frame_count % self.HEATMAP_PREVIEW_EVERY == 0:
+                        try:
+                            heatmap = heatmap_gen.generate(frame_size, frame)
+                            self.heatmap_ready.emit(heatmap)
+                        except ValueError:
+                            pass
 
-                    self.progress_updated.emit(frame_count, total_detections)
-                    self.status_message.emit(
-                        f"Обработано кадров: {frame_count}, Детекций: {total_detections}"
-                    )
+                    if frame_count % self.STATUS_EVERY == 0:
+                        self.progress_updated.emit(frame_count, total_detections)
+                        self.status_message.emit(
+                            f"Обработано кадров: {frame_count}, Детекций: {total_detections}"
+                        )
 
                     if is_webcam and frame_count % 100 == 0:
                         self.status_message.emit(
